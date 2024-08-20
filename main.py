@@ -81,9 +81,29 @@ class TradingAgent:
     def save(self, name):
         self.model.save_weights(name)
 
+import numpy as np
+
+# Function to calculate performance metrics
+def calculate_metrics(price_paths):
+    # Assuming the first path represents the actual strategy (in a real scenario, this would be actual trades)
+    strategy_returns = price_paths[-1] / price_paths[0] - 1
+
+    # Cumulative Return
+    cumulative_return = np.mean(strategy_returns)
+    
+    # Sharpe Ratio
+    risk_free_rate = 0.02  # Example risk-free rate
+    excess_returns = strategy_returns - risk_free_rate
+    sharpe_ratio = np.mean(excess_returns) / np.std(strategy_returns)
+    
+    # Maximum Drawdown
+    cumulative_returns = np.cumprod(1 + strategy_returns)
+    drawdowns = cumulative_returns / np.maximum.accumulate(cumulative_returns) - 1
+    max_drawdown = np.min(drawdowns)
+    
+    return cumulative_return, sharpe_ratio, max_drawdown
 
 
-# Streamlit UI
 def main():
     st.title("Algorithmic Trading with Reinforcement Learning")
     
@@ -106,6 +126,14 @@ def main():
         n_simulations = st.sidebar.slider("Number of Simulations", 100, 10000, 1000)
         price_paths = monte_carlo_simulation(data['Adj Close'].iloc[-1], 1, r, sigma, n_simulations)
         st.line_chart(price_paths)
+
+        # Calculate and display performance metrics
+        cumulative_return, sharpe_ratio, max_drawdown = calculate_metrics(price_paths)
+        
+        st.write("### Performance Metrics")
+        st.metric("Cumulative Return", f"{cumulative_return:.2%}")
+        st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+        st.metric("Maximum Drawdown", f"{max_drawdown:.2%}")
 
         # Placeholder for RL agent
         state_size = len(data.columns)
