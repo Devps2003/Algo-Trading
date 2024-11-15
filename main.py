@@ -16,17 +16,34 @@ def download_data(ticker, start, end):
     return data
 
 # Black-Scholes model
-def black_scholes(S, K, T, r, sigma, option_type="call"):
-    d1 = (np.log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    
+from scipy.stats import norm
+
+def black_scholes_delta(S, K, T, r, sigma, option_type="call"):
+    """
+    Calculate Black-Scholes Delta.
+    """
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
     if option_type == "call":
-        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        return norm.cdf(d1)
     elif option_type == "put":
-        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        return -norm.cdf(-d1)
+    else:
+        raise ValueError("Invalid option type. Use 'call' or 'put'.")
+
 
 # Monte Carlo simulation
-def monte_carlo_simulation(S0, T, r, sigma, n_simulations=1000, n_steps=252):
+def monte_carlo_simulation1(S0, T, r, sigma, n_simulations, n_steps):
+    dt = T / n_steps
+    price_paths = np.zeros((n_simulations, n_steps + 1))
+    price_paths[:, 0] = S0
+
+    for t in range(1, n_steps + 1):
+        z = np.random.standard_normal(n_simulations)
+        price_paths[:, t] = price_paths[:, t - 1] * np.exp(
+            (r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * z
+        )
+    return price_paths
+def monte_carlo_simulation2(S0, T, r, sigma, n_simulations=1000, n_steps=252):
     dt = T/n_steps
     price_paths = np.zeros((n_steps + 1, n_simulations))
     price_paths[0] = S0
@@ -36,6 +53,34 @@ def monte_carlo_simulation(S0, T, r, sigma, n_simulations=1000, n_steps=252):
         price_paths[t] = price_paths[t-1] * np.exp((r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * z)
     
     return price_paths
+
+
+
+def hedging_simulation(S0, K, T, r, sigma, n_simulations, n_steps):
+    dt = T / n_steps
+    time_steps = np.linspace(0, T, n_steps + 1)
+    price_paths = monte_carlo_simulation1(S0, T, r, sigma, n_simulations, n_steps)
+
+    hedge_pnl = np.zeros(n_simulations)
+    
+    for sim in range(n_simulations):
+        cash = 0
+        hedge = 0
+        for t in range(n_steps):
+            St = price_paths[sim, t]
+            d1 = (np.log(St / K) + (r + 0.5 * sigma ** 2) * (T - time_steps[t])) / (sigma * np.sqrt(T - time_steps[t]))
+            delta = norm.cdf(d1)  # Cumulative distribution function of standard normal
+            
+            # Adjust portfolio
+            dS = price_paths[sim, t + 1] - St
+            cash += hedge * dS - (delta - hedge) * St * (r * dt)
+            hedge = delta
+
+        hedge_pnl[sim] = cash + hedge * price_paths[sim, -1] - max(price_paths[sim, -1] - K, 0)
+    
+    return hedge_pnl, price_paths
+
+
 
 # RL Trading Agent class
 class TradingAgent:
@@ -60,20 +105,26 @@ class TradingAgent:
     def act(self, state):
         if np.random.rand() <= self.epsilon:
             return np.random.choice(self.action_size)
-        act_values = self.model.predict(state)
+        act_values = self.model.predict(state, verbose=0)
         return np.argmax(act_values[0])
 
     def replay(self, batch_size):
-        minibatch = np.random.choice(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
+        if len(self.memory) < batch_size:
+            return
+        minibatch = np.random.choice(len(self.memory), batch_size, replace=False)
+        for index in minibatch:
+            state, action, reward, next_state, done = self.memory[index]
             target = reward
             if not done:
-                target += self.gamma * np.amax(self.model.predict(next_state)[0])
-            target_f = self.model.predict(state)
+                target += self.gamma * np.amax(self.model.predict(next_state, verbose=0)[0])
+            target_f = self.model.predict(state, verbose=0)
             target_f[0][action] = target
             self.model.fit(state, target_f, epochs=1, verbose=0)
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
 
     def load(self, name):
         self.model.load_weights(name)
@@ -81,11 +132,8 @@ class TradingAgent:
     def save(self, name):
         self.model.save_weights(name)
 
-import numpy as np
 
-# Function to calculate performance metrics
 def calculate_metrics(price_paths):
-    # Assuming the first path represents the actual strategy (in a real scenario, this would be actual trades)
     strategy_returns = price_paths[-1] / price_paths[0] - 1
 
     # Cumulative Return
@@ -103,7 +151,6 @@ def calculate_metrics(price_paths):
     
     return cumulative_return, sharpe_ratio, max_drawdown
 
-
 def main():
     st.title("Algorithmic Trading with Reinforcement Learning")
     
@@ -120,11 +167,41 @@ def main():
     st.write(f"### {ticker} Data")
     st.line_chart(data['Adj Close'])
     
+    if st.sidebar.button("Run Hedging Strategy"):
+        st.write("### Hedging Simulation")
+        
+        # Ensure the value is a float or int
+        current_price = float(data['Adj Close'].iloc[-1])
+        
+        n_simulations = st.sidebar.slider("Number of Simulations", 100, 10000, 1000)
+        price_paths = monte_carlo_simulation1(current_price, 1, r, sigma, n_simulations, 50)
+        
+        K = st.sidebar.slider(
+            "Strike Price",
+            0.8 * current_price,
+            1.2 * current_price,
+            current_price
+        )
+        
+        n_steps = st.sidebar.slider("Number of Steps", 50, 500, 252)
+        
+        with st.spinner("Running hedging simulation..."):
+            hedge_pnl, price_paths = hedging_simulation(current_price, K, 1, r, sigma, n_simulations, n_steps)
+        
+        st.success("Hedging simulation completed!")
+        
+        # Visualize results
+        st.write("### Hedging P&L")
+        st.line_chart(hedge_pnl)
+
+        st.write("### Price Paths")
+        st.line_chart(price_paths)
+
     # Running Monte Carlo Simulation
     if st.sidebar.button("Run Simulation"):
         st.write("### Monte Carlo Simulation")
         n_simulations = st.sidebar.slider("Number of Simulations", 100, 10000, 1000)
-        price_paths = monte_carlo_simulation(data['Adj Close'].iloc[-1], 1, r, sigma, n_simulations)
+        price_paths = monte_carlo_simulation2(data['Adj Close'].iloc[-1], 1, r, sigma, n_simulations,50)
         st.line_chart(price_paths)
 
         # Calculate and display performance metrics
@@ -135,13 +212,37 @@ def main():
         st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
         st.metric("Maximum Drawdown", f"{max_drawdown:.2%}")
 
-        # Placeholder for RL agent
-        state_size = len(data.columns)
+        # RL agent integration
+        state_size = price_paths.shape[0]
         action_size = 3  # buy, sell, hold
         agent = TradingAgent(state_size, action_size)
 
-        # Training the agent (you can add your logic here)
-        st.write("Training the agent and visualizing results here...")
+        # Simulated training data
+        batch_size = 32
+        states = price_paths.T
+
+        for episode in range(10):  # Example: 10 episodes for training
+            state = states[0].reshape(1, -1)
+            total_reward = 0
+
+            for t in range(1, len(states)):
+                action = agent.act(state)
+                next_state = states[t].reshape(1, -1)
+                reward = states[t][-1] - states[t-1][-1] if action == 1 else 0
+                total_reward += reward
+                done = (t == len(states) - 1)
+                
+                agent.remember(state, action, reward, next_state, done)
+                if len(agent.memory) > batch_size:
+                    agent.replay(batch_size)
+                
+                state = next_state
+
+            st.write(f"Episode {episode + 1}, Total Reward: {total_reward}")
+
+        # Hedging strategy
+        
+
 
 if __name__ == "__main__":
     main()
