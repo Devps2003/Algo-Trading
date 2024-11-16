@@ -3,7 +3,7 @@ import yfinance as yf
 from textblob import TextBlob
 import requests
 
-NEWS_API_KEY = "ab0c92f880af469d99478cdd39b6570d"
+NEWS_API_KEY = ""
 
 def fetch_news(stock_symbol):
     """Fetches news articles using NewsAPI."""
